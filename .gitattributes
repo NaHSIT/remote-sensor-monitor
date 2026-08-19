@@ -1,0 +1,16 @@
+* text=auto
+
+*.cpp text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+
+*.md text eol=lf
+*.ini text eol=lf
+*.txt text eol=lf
+
+*.ui text eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
