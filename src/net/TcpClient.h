@@ -59,7 +59,7 @@ namespace net
         // ==================== 构造与析构 ====================
 
         /// 构造TCP客户端
-        /// @param io Boost.Asio的io_context引用，由上层统一管理
+        /// io Boost.Asio的io_context引用，由上层统一管理
         explicit TcpClient(boost::asio::io_context &io);
 
         ~TcpClient();
@@ -75,17 +75,17 @@ namespace net
         // ==================== 连接管理 ====================
 
         /// 异步连接服务器
-        /// @param host IP地址或域名
-        /// @param port 端口号
+        /// host IP地址或域名
+        /// port 端口号
         void connect(const std::string &host, uint16_t port);
 
         /// 断开连接（优雅关闭）
         void disconnect();
 
         /// 设置自动重连
-        /// @param enable 是否启用自动重连
-        /// @param intervalMs 重连间隔（毫秒）
-        /// @param maxRetries 最大重连次数，0表示无限重连
+        /// enable 是否启用自动重连
+        /// intervalMs 重连间隔（毫秒）
+        /// maxRetries 最大重连次数，0表示无限重连
         void setAutoReconnect(bool enable, int intervalMs = 3000, int maxRetries = 5);
 
         /// 获取当前连接状态
