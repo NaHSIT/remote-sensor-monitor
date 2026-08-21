@@ -160,10 +160,10 @@ namespace net
         socket_.async_read_some(
             boost::asio::buffer(readBuffer_, READ_BUFFER_SIZE),
             boost::asio::bind_executor(strand_,
-                                        [this](const boost::system::error_code &ec, size_t bytesTransferred)
-                                        {
-                                            handleRead(ec, bytesTransferred);
-                                        }));
+                                       [this](const boost::system::error_code &ec, size_t bytesTransferred)
+                                       {
+                                           handleRead(ec, bytesTransferred);
+                                       }));
     }
 
     // 处理读取结果
@@ -236,5 +236,137 @@ namespace net
             // 尝试重连
             startReconnect();
         }
+    }
+
+    // 数据发送 参数（vector）
+    void TcpClient::asyncWrite(const std::vector<char> &data)
+    {
+        asyncWrite(data.data(), data.size());
+    }
+
+    // 数据发送 参数（指针，长度）
+    void TcpClient::asyncWrite(const char *data, size_t len)
+    {
+        // 参数检查
+        if (data == nullptr || len <= 0)
+        {
+            NET_LOG_WARN("数据发送为空");
+            return;
+        }
+
+        // 连接状态检查
+        if (!isConnected())
+        {
+            NET_LOG_ERROR("未连接，无法发送数据");
+            return;
+        }
+
+        // 将数据加入到发送队列
+        std::vector<char> buffer(data, data + len);
+        writeQueue_.push_back(std::move(buffer));
+        NET_LOG_INFO("数据已加入到发送队列，当前队列大小为%zu", writeQueue_.size());
+
+        if (!isWriting_)
+        {
+            doWrite();
+        }
+    }
+
+    // 执行写操作
+    void TcpClient::doWrite()
+    {
+        if (writeQueue_.empty())
+        {
+            isWriting_ = false;
+            return;
+        }
+
+        if (!isConnected())
+        {
+            NET_LOG_ERROR("未连接，无法执行操作");
+            writeQueue_.clear();
+            isWriting_ = false;
+            return;
+        }
+
+        isWriting_ = true;
+        auto &data = writeQueue_.front();
+        // 发起异步写入
+        boost::asio::async_write(
+            socket_,
+            boost::asio::buffer(data),
+            boost::asio::bind_executor(strand_,
+                                       [this](const boost::system::error_code &ec, size_t bytesTransferred)
+                                       {
+                                           handleWrite(ec, bytesTransferred);
+                                       }));
+    }
+
+    //处理写入结果
+    void TcpClient::handleWrite(const boost::system::error_code &ec,size_t bytesTransfeered)
+    {
+        //写入成功
+        if(!ec)
+        {
+            NET_LOG_INFO("成功发送%zu字节",bytesTransfeered);
+            writeQueue_.pop_front();
+            if(!writeQueue_.empty())
+            {
+                doWrite();
+            }else{
+                isWriting_=false;
+            }
+        }else if(ec==boost::asio::error::operation_aborted){
+            NET_LOG_INFO("写操作被取消");
+            writeQueue_.clear();
+            isWriting_=false;
+        }else{
+            //写入失败
+            NET_LOG_ERROR("写入失败:%s(错误码:%d)",ec.message().c_str(),ec.value());
+            writeQueue_.clear();
+            isWriting_=false;
+            handleError(ec,"发送数据失败");
+            closeSocket();
+            state_=ConnectState::Disconnected;
+            startReconnect();
+        }
+    }
+
+    //关闭socket
+    void TcpClient::closeSocket()
+    {
+        if(socket_.is_open()){
+            boost::system::error_code ec;
+            socket_.shutdown(tcp::socket::shutdown_both,ec);
+            if(ec){
+                NET_LOG_ERROR("shutdown失败:%s",ec.message().c_str());
+            }
+            ec.clear();
+            socket_.close(ec);
+            if(ec){
+                NET_LOG_ERROR("closeSocket失败:%s",ec.message().c_str());
+            }
+        }
+    }
+
+    //断开连接
+    void TcpClient::disconnect()
+    {
+        boost::system::error_code ec;
+        reconnectTimer_.cancel(ec);
+        ec.clear();
+        connectTimer_.cancel(ec);
+
+        closeSocket();
+
+        writeQueue_.clear();
+        isWriting_=false;
+        recvBuffer_.clear();
+
+        state_=ConnectState::Disconnected;
+        autoReconnect_=false;
+        retryCount_=0;
+
+        NET_LOG_INFO("已断开连接");
     }
 }
