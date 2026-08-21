@@ -302,54 +302,63 @@ namespace net
                                        }));
     }
 
-    //处理写入结果
-    void TcpClient::handleWrite(const boost::system::error_code &ec,size_t bytesTransfeered)
+    // 处理写入结果
+    void TcpClient::handleWrite(const boost::system::error_code &ec, size_t bytesTransfeered)
     {
-        //写入成功
-        if(!ec)
+        // 写入成功
+        if (!ec)
         {
-            NET_LOG_INFO("成功发送%zu字节",bytesTransfeered);
+            NET_LOG_INFO("成功发送%zu字节", bytesTransfeered);
             writeQueue_.pop_front();
-            if(!writeQueue_.empty())
+            if (!writeQueue_.empty())
             {
                 doWrite();
-            }else{
-                isWriting_=false;
             }
-        }else if(ec==boost::asio::error::operation_aborted){
+            else
+            {
+                isWriting_ = false;
+            }
+        }
+        else if (ec == boost::asio::error::operation_aborted)
+        {
             NET_LOG_INFO("写操作被取消");
             writeQueue_.clear();
-            isWriting_=false;
-        }else{
-            //写入失败
-            NET_LOG_ERROR("写入失败:%s(错误码:%d)",ec.message().c_str(),ec.value());
+            isWriting_ = false;
+        }
+        else
+        {
+            // 写入失败
+            NET_LOG_ERROR("写入失败:%s(错误码:%d)", ec.message().c_str(), ec.value());
             writeQueue_.clear();
-            isWriting_=false;
-            handleError(ec,"发送数据失败");
+            isWriting_ = false;
+            handleError(ec, "发送数据失败");
             closeSocket();
-            state_=ConnectState::Disconnected;
+            state_ = ConnectState::Disconnected;
             startReconnect();
         }
     }
 
-    //关闭socket
+    // 关闭socket
     void TcpClient::closeSocket()
     {
-        if(socket_.is_open()){
+        if (socket_.is_open())
+        {
             boost::system::error_code ec;
-            socket_.shutdown(tcp::socket::shutdown_both,ec);
-            if(ec){
-                NET_LOG_ERROR("shutdown失败:%s",ec.message().c_str());
+            socket_.shutdown(tcp::socket::shutdown_both, ec);
+            if (ec)
+            {
+                NET_LOG_ERROR("shutdown失败:%s", ec.message().c_str());
             }
             ec.clear();
             socket_.close(ec);
-            if(ec){
-                NET_LOG_ERROR("closeSocket失败:%s",ec.message().c_str());
+            if (ec)
+            {
+                NET_LOG_ERROR("closeSocket失败:%s", ec.message().c_str());
             }
         }
     }
 
-    //断开连接
+    // 断开连接
     void TcpClient::disconnect()
     {
         boost::system::error_code ec;
@@ -360,13 +369,107 @@ namespace net
         closeSocket();
 
         writeQueue_.clear();
-        isWriting_=false;
+        isWriting_ = false;
         recvBuffer_.clear();
 
-        state_=ConnectState::Disconnected;
-        autoReconnect_=false;
-        retryCount_=0;
+        state_ = ConnectState::Disconnected;
+        autoReconnect_ = false;
+        retryCount_ = 0;
 
         NET_LOG_INFO("已断开连接");
+    }
+
+    // 开始重连
+    void TcpClient::startReconnect()
+    {
+        if (!autoReconnect_)
+        {
+            NET_LOG_INFO("未启用重连机制");
+            return;
+        }
+
+        if (maxRetryCount_ > 0 && retryCount_ >= maxRetryCount_)
+        {
+            NET_LOG_ERROR("已达到最大重连次数，此次重连无法进行");
+            state_ = ConnectState::Disconnected;
+            return;
+        }
+
+        retryCount_++;
+        state_ = ConnectState::Reconnecting;
+        NET_LOG_INFO("将在%d毫秒后进行第%d次重连", reconnectIntervalMs_, retryCount_);
+
+        // 设置重连定时器
+        reconnectTimer_.expires_after(std::chrono::milliseconds(reconnectIntervalMs_));
+        reconnectTimer_.async_wait(boost::asio::bind_executor(strand_, [this](const boost::system::error_code &ec)
+                                                              { handleReconnectTimer(ec); }));
+    }
+
+    // 处理重连定时器超时
+    void TcpClient::handleReconnectTimer(const boost::system::error_code &ec)
+    {
+        if (ec == boost::asio::error::operation_aborted)
+        {
+            NET_LOG_INFO("定时器被取消");
+            return;
+        }
+
+        if (ec)
+        {
+            NET_LOG_ERROR("重连定时器错误:%s", ec.message().c_str());
+            return;
+        }
+
+        if (remoteHost_.empty() || remotePort_ == 0)
+        {
+            NET_LOG_ERROR("信息缺失，无法重连");
+            state_ = ConnectState::Disconnected;
+            return;
+        }
+
+        closeSocket();
+
+        state_ = ConnectState::Connecting;
+        NET_LOG_INFO("尝试重新连接%s%u...", remoteHost_.c_str(), remotePort_);
+
+        // 重新解析地址
+        tcp::resolver resolver(io_);
+        boost::system::error_code resolveEc;
+        auto endpoints = resolver.resolve(remoteHost_, std::to_string(remotePort_), resolveEc);
+
+        if (resolveEc)
+        {
+            NET_LOG_ERROR("重连时解析地址失败: %s", resolveEc.message().c_str());
+            handleError(resolveEc, "重连时解析地址失败");
+            state_ = ConnectState::Disconnected;
+            return;
+        }
+
+        // 设置超时连接定时器
+        connectTimer_.expires_after(std::chrono::milliseconds(CONNECT_TIMEOUT_MS));
+        connectTimer_.async_wait(
+            boost::asio::bind_executor(strand_,
+                                       [this](const boost::system::error_code &timerEc)
+                                       {
+                                           if (!timerEc && state_ == ConnectState::Connecting)
+                                           {
+                                               NET_LOG_ERROR("重连超时（%d ms）", CONNECT_TIMEOUT_MS);
+                                               closeSocket();
+                                               state_ = ConnectState::Disconnected;
+                                               handleError(boost::asio::error::timed_out, "重连超时");
+                                               startReconnect(); // 继续下一次重连
+                                           }
+                                       }));
+
+        // 发起异步连接
+        boost::asio::async_connect(
+            socket_,
+            endpoints,
+            boost::asio::bind_executor(strand_,
+                                       [this](const boost::system::error_code &connectEc,
+                                              const tcp::endpoint &endpoint)
+                                       {
+                                           handleConnect(connectEc);
+                                       }));
     }
 }
