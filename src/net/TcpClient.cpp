@@ -32,10 +32,16 @@ namespace net
     void TcpClient::connect(const std::string &host, uint16_t port)
     {
         // 检查当前状态
-        if (state_ == ConnectState::Connected)
+        /*防止重复连接。如果已经连上了还调 connect()，先断开旧连接；
+        如果正在连接或重连中，直接忽略。这是防御式编程，避免上层逻辑混乱。*/
+        if (state_ == ConnectState::Connected||state_==ConnectState::Connecting)
         {
-            NET_LOG_WARN("已连接了%s:%u,请先断开连接", remoteHost_.c_str(), remotePort_);
-            disconnect();
+            reconnectTimer_.cancel();
+            connectTimer_.cancel();
+            closeSocket();
+            writeQueue_.clear();
+            isWriting_=false;
+            recvBuffer_.clear();
         }
 
         if (state_ == ConnectState::Connecting)
@@ -137,12 +143,15 @@ namespace net
             closeSocket();
             state_ = ConnectState::Disconnected;
 
-            if (errorCallback_)
+            if (ec != boost::asio::error::operation_aborted)
             {
-                errorCallback_(ec, "连接失败");
+                state_ = ConnectState::Disconnected;
+                if (errorCallback_)
+                {
+                    errorCallback_(ec, "连接失败");
+                }
+                startReconnect();
             }
-
-            startReconnect();
         }
     }
 
