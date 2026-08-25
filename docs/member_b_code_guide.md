@@ -228,3 +228,16 @@ alarms.setCallback([](const AlarmEvent& event) {
 3. 连续传入越界/正常数据，确认 `AlarmManager` 只返回产生和恢复两次事件；
 4. 调用 `DatabaseManager::save()`、`flush()` 和 `queryHistory()`，确认数量和字段一致；
 5. 把查询结果交给 `CsvExporter`，用文本编辑器或表格软件检查列名、时间和设备 ID。
+
+## 9. 本版本额外的安全边界
+
+- `DataProcessor` 和 `AlarmManager` 都会把 `NaN`、正负无穷大排除在业务判断之外；
+  即使调用方绕过处理器直接调用告警模块，也不会把非法数字当作“恢复正常”。
+- 传入反向、无限大的校验区间或告警阈值时，会回退到默认配置，并保留线程安全的状态缓存。
+- `DatabaseManager::open()` 切换数据库前会先提交旧连接缓存；提交失败会保留旧连接，避免静默丢数据。
+  `close()` 同样不会在 flush 失败时直接释放连接，调用方可以修复磁盘或权限后重试。
+- SQLite 写入使用参数化 SQL 和单事务批量提交；CSV 文件路径为空、打开失败或写入失败时，
+  都通过 `errorMessage` 返回可读错误。
+
+可以在项目根目录执行 `cmake -S . -B build && cmake --build build && ctest --test-dir build`
+运行成员 B 的业务和存储回归测试。

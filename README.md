@@ -11,6 +11,23 @@
 - SQLite
 - QCustomPlot / Qt Charts
 
+## 成员 B 核心模块构建
+
+成员 B 的业务和存储代码被组织为不依赖 Qt 的 `sensor_core` 静态/共享库，
+便于先独立联调，再由 UI 层链接。机器安装 CMake、C++17 编译器和 SQLite3
+开发包后执行：
+
+```bash
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+核心链路为 `DataProcessor::process()` → `AlarmManager::evaluate()` →
+`DatabaseManager::save()` → `CsvExporter::exportToFile()`。处理器会过滤空设备号、
+NaN/无穷大和越界值；告警器只在状态切换时通知；数据库使用参数化 SQL 和批量事务；
+CSV 导出遵循 RFC 4180 的引号转义规则，并写入 UTF-8 BOM 方便 Excel 打开。
+
 ## Project Structure
 
 ### Root Files

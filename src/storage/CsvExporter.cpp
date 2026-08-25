@@ -35,6 +35,11 @@ std::string formatTimestamp(std::chrono::system_clock::time_point time) {
 
 bool CsvExporter::exportToFile(const std::vector<SensorData>& data, const std::string& filePath,
                                std::string* errorMessage) {
+    if (errorMessage) errorMessage->clear();
+    if (filePath.empty()) {
+        if (errorMessage) *errorMessage = "CSV file path cannot be empty";
+        return false;
+    }
     // trunc 表示覆盖旧文件，binary 保证 BOM 字节按原样写入。
     std::ofstream output(filePath, std::ios::binary | std::ios::trunc);
     if (!output) {

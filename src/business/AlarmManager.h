@@ -43,6 +43,7 @@ public:
     // 检查一个样本。只有状态发生变化时才返回事件：
     // 正常 -> 越界是“产生告警”，越界 -> 正常是“恢复告警”。
     std::vector<AlarmEvent> evaluate(const SensorData& data);
+    // 设置阈值时会校验 finite 且 minimum <= maximum；无效项回退到默认值。
     void setThresholds(AlarmThresholds thresholds);
     AlarmThresholds thresholds() const;
     bool isAlarmActive(const std::string& deviceId, MeasurementType measurement) const;

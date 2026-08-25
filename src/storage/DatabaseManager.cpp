@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <limits>
 #include <sstream>
 #include <utility>
@@ -39,6 +40,14 @@ long long toMilliseconds(const std::chrono::system_clock::time_point& time) {
 std::chrono::system_clock::time_point fromMilliseconds(long long milliseconds) {
     return std::chrono::system_clock::time_point{std::chrono::milliseconds{milliseconds}};
 }
+
+bool hasValidMeasurements(const SensorData& data) {
+    // 存储层可能被调用方绕过 DataProcessor 直接使用；再次拒绝非有限值，
+    // 避免 NaN/无穷大进入 SQLite 后在历史查询或 CSV 导出中扩散。
+    return !data.deviceId.empty() && std::isfinite(data.temperature) &&
+           std::isfinite(data.humidity) && std::isfinite(data.pressure) &&
+           std::isfinite(data.vibration);
+}
 } // namespace
 
 DatabaseManager::DatabaseManager() = default;
@@ -54,8 +63,14 @@ DatabaseManager::~DatabaseManager() {
 
 bool DatabaseManager::open(const std::string& databasePath, std::size_t batchSize) {
     std::lock_guard<std::mutex> lock(mutex_);
+    // 先校验路径，再处理当前连接；失败时保留已有连接，调用者仍可继续使用它。
+    if (databasePath.empty()) {
+        setErrorLocked("Database path cannot be empty");
+        return false;
+    }
     if (database_ != nullptr) {
-        flushLocked();
+        // 重新打开前先落盘；失败时保留旧连接和缓存，避免切换数据库时丢数据。
+        if (!flushLocked()) return false;
         sqlite3_close(database_);
         database_ = nullptr;
     }
@@ -64,10 +79,6 @@ bool DatabaseManager::open(const std::string& databasePath, std::size_t batchSiz
     // 即使调用者传入 0，也保证批次至少有 1 条数据。
     batchSize_ = std::max<std::size_t>(1, batchSize);
 
-    if (databasePath.empty()) {
-        setErrorLocked("Database path cannot be empty");
-        return false;
-    }
     if (sqlite3_open_v2(databasePath.c_str(), &database_, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr) != SQLITE_OK) {
         setErrorLocked(database_ != nullptr ? sqlite3_errmsg(database_) : "Unable to allocate SQLite database");
         if (database_ != nullptr) {
@@ -78,7 +89,12 @@ bool DatabaseManager::open(const std::string& databasePath, std::size_t batchSiz
     }
     // 数据库被其他线程短暂占用时，最多等待 5 秒而不是立即失败。
     sqlite3_busy_timeout(database_, 5'000);
-    return createTableLocked();
+    if (!createTableLocked()) {
+        sqlite3_close(database_);
+        database_ = nullptr;
+        return false;
+    }
+    return true;
 }
 
 void DatabaseManager::close() {
@@ -86,7 +102,8 @@ void DatabaseManager::close() {
     if (database_ == nullptr) {
         return;
     }
-    flushLocked();
+    // 写入失败时保留连接和 pending_，调用者可修复磁盘/权限后再次 flush。
+    if (!flushLocked()) return;
     if (sqlite3_close(database_) != SQLITE_OK) {
         setErrorLocked(sqlite3_errmsg(database_));
         return;
@@ -107,8 +124,16 @@ std::string DatabaseManager::lastError() const {
 
 bool DatabaseManager::save(const SensorData& data) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (database_ == nullptr || data.deviceId.empty()) {
-        setErrorLocked(database_ == nullptr ? "Database is not open" : "Device ID cannot be empty");
+    if (database_ == nullptr) {
+        setErrorLocked("Database is not open");
+        return false;
+    }
+    if (data.deviceId.empty()) {
+        setErrorLocked("Device ID cannot be empty");
+        return false;
+    }
+    if (!hasValidMeasurements(data)) {
+        setErrorLocked("Sensor data contains invalid values");
         return false;
     }
     pending_.push_back(data);
@@ -121,8 +146,14 @@ bool DatabaseManager::saveBatch(const std::vector<SensorData>& samples) {
         setErrorLocked("Database is not open");
         return false;
     }
-    if (std::any_of(samples.begin(), samples.end(), [](const SensorData& data) { return data.deviceId.empty(); })) {
+    if (std::any_of(samples.begin(), samples.end(),
+                    [](const SensorData& data) { return data.deviceId.empty(); })) {
         setErrorLocked("Device ID cannot be empty");
+        return false;
+    }
+    if (std::any_of(samples.begin(), samples.end(),
+                    [](const SensorData& data) { return !hasValidMeasurements(data); })) {
+        setErrorLocked("Sensor data contains invalid values");
         return false;
     }
     if (samples.empty()) return true;
@@ -168,7 +199,15 @@ std::vector<SensorData> DatabaseManager::queryHistory(
     if (deviceId) sqlite3_bind_text(statement, parameter++, deviceId->c_str(), -1, SQLITE_TRANSIENT);
     if (from) sqlite3_bind_int64(statement, parameter++, toMilliseconds(*from));
     if (to) sqlite3_bind_int64(statement, parameter++, toMilliseconds(*to));
-    if (limit > 0) sqlite3_bind_int64(statement, parameter++, static_cast<sqlite3_int64>(limit));
+    if (limit > 0) {
+        const auto maxSqliteInteger = static_cast<std::size_t>(std::numeric_limits<sqlite3_int64>::max());
+        if (limit > maxSqliteInteger) {
+            sqlite3_finalize(statement);
+            setErrorLocked("History query limit is too large");
+            return results;
+        }
+        sqlite3_bind_int64(statement, parameter++, static_cast<sqlite3_int64>(limit));
+    }
 
     int rc = SQLITE_ROW;
     // sqlite3_step 每次返回一行；SQL_DONE 表示遍历结束。

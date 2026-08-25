@@ -1,9 +1,27 @@
 #include "AlarmManager.h"
 
 #include <iterator>
+#include <cmath>
 #include <utility>
 
-AlarmManager::AlarmManager(AlarmThresholds thresholds) : thresholds_(std::move(thresholds)) {}
+namespace {
+bool validLimit(const AlarmLimit& limit) {
+    return std::isfinite(limit.minimum) && std::isfinite(limit.maximum) && limit.minimum <= limit.maximum;
+}
+
+AlarmThresholds normaliseThresholds(AlarmThresholds thresholds) {
+    // 无效阈值会令告警永远触发/永远不触发，因此回退到默认配置。
+    const AlarmThresholds defaults{};
+    if (!validLimit(thresholds.temperature)) thresholds.temperature = defaults.temperature;
+    if (!validLimit(thresholds.humidity)) thresholds.humidity = defaults.humidity;
+    if (!validLimit(thresholds.pressure)) thresholds.pressure = defaults.pressure;
+    if (!validLimit(thresholds.vibration)) thresholds.vibration = defaults.vibration;
+    return thresholds;
+}
+} // namespace
+
+AlarmManager::AlarmManager(AlarmThresholds thresholds)
+    : thresholds_(normaliseThresholds(std::move(thresholds))) {}
 
 std::vector<AlarmEvent> AlarmManager::evaluate(const SensorData& data) {
     AlarmCallback callback;
@@ -25,7 +43,7 @@ std::vector<AlarmEvent> AlarmManager::evaluate(const SensorData& data) {
 
 void AlarmManager::setThresholds(AlarmThresholds thresholds) {
     std::lock_guard<std::mutex> lock(mutex_);
-    thresholds_ = std::move(thresholds);
+    thresholds_ = normaliseThresholds(std::move(thresholds));
 }
 
 AlarmThresholds AlarmManager::thresholds() const {
@@ -54,6 +72,12 @@ void AlarmManager::setCallback(AlarmCallback callback) {
 
 std::vector<AlarmEvent> AlarmManager::evaluateLocked(const SensorData& data) {
     std::vector<AlarmEvent> events;
+    // AlarmManager 通常接收 DataProcessor 的结果，但这里仍做最后一道防线：
+    // 非有限值不能参与阈值比较，否则 NaN 会被误当作“恢复正常”。
+    if (data.deviceId.empty() || !std::isfinite(data.temperature) || !std::isfinite(data.humidity) ||
+        !std::isfinite(data.pressure) || !std::isfinite(data.vibration)) {
+        return events;
+    }
     // 四类测量值分别判断；一个样本可能同时产生多个告警事件。
     evaluateValue(events, data, MeasurementType::Temperature, data.temperature, thresholds_.temperature);
     evaluateValue(events, data, MeasurementType::Humidity, data.humidity, thresholds_.humidity);
