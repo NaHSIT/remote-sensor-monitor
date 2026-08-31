@@ -34,13 +34,13 @@ namespace net
         // 检查当前状态
         /*防止重复连接。如果已经连上了还调 connect()，先断开旧连接；
         如果正在连接或重连中，直接忽略。这是防御式编程，避免上层逻辑混乱。*/
-        if (state_ == ConnectState::Connected||state_==ConnectState::Connecting)
+        if (state_ == ConnectState::Connected || state_ == ConnectState::Connecting)
         {
             reconnectTimer_.cancel();
             connectTimer_.cancel();
             closeSocket();
             writeQueue_.clear();
-            isWriting_=false;
+            isWriting_ = false;
             recvBuffer_.clear();
         }
 
@@ -481,4 +481,80 @@ namespace net
                                            handleConnect(connectEc);
                                        }));
     }
+
+    // 统一错误处理
+    void TcpClient::handleError(const boost::system::error_code &ec, const std::string &context)
+    {
+        // 记录错误日志
+        NET_LOG_ERROR("[%s] %s (错误码: %d)", context.c_str(), ec.message().c_str(), ec.value());
+        // 触发错误回调，供上层感知错误
+        if (errorCallback_)
+        {
+            errorCallback_(ec, context + ": " + ec.message());
+        }
+    }
+
+    // 自动重连配置
+    void TcpClient::setAutoReconnect(bool enable, int intervalMs, int maxRetries)
+    {
+        autoReconnect_ = enable;
+        // 重连间隔做合法性兜底，非法值退回默认 3000ms
+        reconnectIntervalMs_ = (intervalMs > 0) ? intervalMs : 3000;
+        // 最大重试次数（0 表示无限重连），负数按 0 处理
+        maxRetryCount_ = (maxRetries >= 0) ? maxRetries : 0;
+        if (!enable)
+        {
+            // 关闭重连时取消正在等待的重连定时器，避免误触发
+            boost::system::error_code ec;
+            reconnectTimer_.cancel(ec);
+            retryCount_ = 0;
+            // 若正处于重连等待中，回到未连接状态
+            if (state_ == ConnectState::Reconnecting)
+            {
+                state_ = ConnectState::Disconnected;
+            }
+        }
+        NET_LOG_INFO("自动重连已%s，间隔 %dms，最大重试 %d 次",
+                     enable ? "启用" : "禁用", reconnectIntervalMs_, maxRetryCount_);
+    }
+
+    // 信息查询，获取远程IP地址
+    std::string TcpClient::remoteAddress() const
+    {
+        boost::system::error_code ec;
+        auto endpoint = socket_.remote_endpoint(ec);
+        if (ec)
+        {
+            NET_LOG_WARN("获取远端地址失败: %s", ec.message().c_str());
+            return "";
+        }
+        return endpoint.address().to_string();
+    }
+
+    // 获取远程端口号
+    uint16_t TcpClient::remotePort() const
+    {
+        boost::system::error_code ec;
+        auto endpoint = socket_.remote_endpoint(ec);
+        if (ec)
+        {
+            NET_LOG_WARN("获取远端端口失败: %s", ec.message().c_str());
+            return 0;
+        }
+        return endpoint.port();
+    }
+
+    // 获取本地端口号
+    uint16_t TcpClient::localPort() const
+    {
+        boost::system::error_code ec;
+        auto endpoint = socket_.local_endpoint(ec);
+        if (ec)
+        {
+            NET_LOG_WARN("获取本地端口失败: %s", ec.message().c_str());
+            return 0;
+        }
+        return endpoint.port();
+    }
+
 }
