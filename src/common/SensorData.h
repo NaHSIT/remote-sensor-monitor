@@ -9,6 +9,8 @@
 #include <string>
 #include <chrono>
 
+#include "../protocol/CRC.h"
+
 namespace common
 {
     // 格式约定 将协议中每个字段占几个字节、在哪个位置全部定义成带名字的常量
@@ -35,37 +37,6 @@ namespace common
         uint16_t crcCalculated = 0;//计算得到的CRC
 
         bool isValid() const { return crcReceived == crcCalculated; }
-    };
-
-    // CRC16 校验
-    class CRC16
-    {
-    public:
-        static uint16_t calculate(const uint8_t *data, size_t length)
-        {
-            uint16_t crc = 0xFFFF;
-            for (size_t i = 0; i < length; ++i)
-            {
-                crc ^= static_cast<uint16_t>(data[i]);
-                for (int j = 0; j < 8; ++j)
-                {
-                    if (crc & 0x0001)
-                    {
-                        crc = (crc >> 1) ^ 0xA001;
-                    }
-                    else
-                    {
-                        crc >>= 1;
-                    }
-                }
-            }
-            return crc;
-        }
-
-        static uint16_t calculate(const std::vector<uint8_t> &data)
-        {
-            return calculate(data.data(), data.size());
-        }
     };
 
     // 字节序工具
