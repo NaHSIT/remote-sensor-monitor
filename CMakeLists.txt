@@ -7,12 +7,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(SQLite3 REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system)
 
-# 核心库：协议层（成员A）+ 业务/存储层（成员B/C）
+# 核心库：协议层（成员A）+ 会话层（成员A）+ 业务/存储层（成员B/C）
 add_library(sensor_core
     # 协议层 - 成员A
     src/protocol/CRC.cpp
     src/protocol/ProtocolParser.cpp
+    # 会话层 - 成员A
+    src/net/SensorSession.cpp
+    src/net/DeviceManager.cpp
     # 业务层 - 成员B
     src/business/DataProcessor.cpp
     src/business/AlarmManager.cpp
@@ -22,6 +26,7 @@ add_library(sensor_core
 )
 
 target_include_directories(sensor_core PUBLIC src)
+target_link_libraries(sensor_core PUBLIC Boost::system)
 
 if(TARGET SQLite::SQLite3)
     target_link_libraries(sensor_core PUBLIC SQLite::SQLite3)

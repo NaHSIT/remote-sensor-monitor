@@ -2,12 +2,8 @@
 
 #include "../common/SensorData.h"
 
-#include <chrono>
-#include <cstddef>
 #include <mutex>
 #include <optional>
-#include <string>
-#include <vector>
 
 struct sqlite3;
 
